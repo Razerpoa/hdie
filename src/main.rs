@@ -290,19 +290,10 @@ fn handle_renaming(path: &Path, mode: bool) {
 // Helper function to append a filename to an existing path
 fn append_filename_to_path(original_path: &Path, new_filename: &str) -> PathBuf {
     let mut new_path = original_path.to_path_buf();
-    new_path.pop(); // Remove the old filename
-    new_path.push(new_filename); // Append the new filename
+    new_path.pop();
+    new_path.push(new_filename); 
     new_path
 }
-
-// fn list_dir_in_dir(path: &Path) -> Vec<String> {
-//     WalkDir::new(path)
-//         .into_iter()
-//         .filter_map(|entry| entry.ok())
-//         .filter(|entry| entry.file_type().is_dir())
-//         .map(|entry| entry.path().to_string_lossy().into_owned())
-//         .collect() // Collect into a Vec<String>
-// }
 
 fn encrypt_message<T: AsRef<str>>(msg: T, key: &[u8]) -> String {
     let msg = msg.as_ref();
@@ -317,10 +308,7 @@ fn encrypt_message<T: AsRef<str>>(msg: T, key: &[u8]) -> String {
     cipher
 }
 
-fn decrypt_message<T: AsRef<str>>(
-    ciphertext: T,
-    key: &[u8],
-) -> Result<String, Box<dyn std::error::Error>> {
+fn decrypt_message<T: AsRef<str>>(ciphertext: T,key: &[u8],) -> Result<String, Box<dyn std::error::Error>> {
     let ciphertext = data_encoding::BASE64URL.decode(ciphertext.as_ref().as_bytes())?;
     let plaintext = match decrypt_aes_gcm(key, &ciphertext) {
         Ok(plaintext) => plaintext,
