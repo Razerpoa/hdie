@@ -59,11 +59,10 @@ The script uses the Windows registry to store a salt, located at `SOFTWARE\BigBo
 - The script verifies that files and directories exist before attempting encryption/decryption.
 - Errors are logged when file access is denied or if decryption fails.
 
-## License
-This project is license under the [MIT License](https://github.com/Razerpoa/hdie/blob/master/LICENSE)
-
 ## Security Considerations
 
 - The encryption key is derived using the password and a salt, hashed using SHA3-256.
 - Encrypted files and filenames are secured using AES-256-GCM with a 12-byte nonce.
   
+## License
+This project is license under the [MIT License](https://github.com/Razerpoa/hdie/blob/master/LICENSE)
