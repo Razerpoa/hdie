@@ -65,4 +65,4 @@ The script uses the Windows registry to store a salt, located at `SOFTWARE\BigBo
 - Encrypted files and filenames are secured using AES-256-GCM with a 12-byte nonce.
   
 ## License
-This project is license under the [MIT License](https://github.com/Razerpoa/hdie/blob/master/LICENSE)
+This project is protected under the [MIT License](https://github.com/Razerpoa/hdie/blob/master/LICENSE)
