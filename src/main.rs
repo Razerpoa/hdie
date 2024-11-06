@@ -266,7 +266,7 @@ fn handle_renaming(path: &Path, mode: bool) {
                         }
                     };
 
-                // Create new full path with the decoded filename
+                // Create new full path with the decoded filename 
                 let new_path = append_filename_to_path(path, &decoded_filename);
 
                 // Rename the file back to the original name
