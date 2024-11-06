@@ -1,0 +1,12 @@
+[package]
+name = "hdie"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+data-encoding = "2.6.0"
+rand = "0.8.5"
+ring = "0.17.8"
+sha3 = "0.10.8"
+walkdir = "2.5.0"
+winreg = "0.52.0"
