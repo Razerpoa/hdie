@@ -312,9 +312,9 @@ fn decrypt_message<T: AsRef<str>>(ciphertext: T,key: &[u8],) -> Result<String, B
     let ciphertext = data_encoding::BASE64URL.decode(ciphertext.as_ref().as_bytes())?;
     let plaintext = match decrypt_aes_gcm(key, &ciphertext) {
         Ok(plaintext) => plaintext,
-        Err(e) => {
-            println!("{}", e);
-            exit(1)
+        Err(_) => {
+            eprintln!("Wrong password or target path isn't encrypted");
+            exit(1);
         }
     };
     let msg = String::from_utf8_lossy(&plaintext).into_owned();
