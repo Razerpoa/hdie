@@ -19,6 +19,7 @@ use winreg::enums::*;
 use winreg::RegKey;
 
 const SALT_REGISTRY_KEY: &str = r"SOFTWARE\BigBottle"; // Change this to your desired registry path
+const PREFIX: &str = ".temp-[";
 
 fn encrypt_aes_gcm(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Unspecified> {
     let nonce = generate(&SystemRandom::new()).unwrap().expose();
@@ -232,17 +233,32 @@ fn handle_registry() -> io::Result<Vec<u8>> {
     Ok(decoded)
 }
 
+fn handle_encoding(prefix: &str, filename: String) -> String {
+    // Encode the filename and prepend the prefix
+    let encoded_filename = data_encoding::BASE64URL.encode(filename.as_bytes());
+    let new_name = format!("{}{}]", prefix, encoded_filename);
+    new_name
+}
+
+fn handle_decoding(prefix: &str, filename: String) -> Result<String, String> {
+    // Strip prefix and suffix
+    let encoded_filename = &filename[prefix.len()..filename.len() - 1];
+
+    // Attempt to decode
+    match data_encoding::BASE64URL.decode(encoded_filename.as_bytes()) {
+        Ok(decoded_bytes) => Ok(String::from_utf8_lossy(&decoded_bytes).into_owned()),
+        Err(e) => Err(format!("Decoding error: {}", e)), // Return the error
+    }
+}
+
+
 fn handle_renaming(path: &Path, mode: bool) {
-    let prefix = ".temp-[";
     let filename = path.file_name().unwrap().to_string_lossy().into_owned();
 
     match mode {
         // Encoding and renaming
         true => {
-            // Encode the filename and prepend the prefix
-            let encoded_filename = data_encoding::BASE64URL.encode(filename.as_bytes());
-            let new_name = format!("{}{}]", prefix, encoded_filename);
-
+            let new_name = handle_encoding(PREFIX, filename);
             // Create a new full path with the encoded filename
             let new_path = append_filename_to_path(path, &new_name);
 
@@ -255,16 +271,14 @@ fn handle_renaming(path: &Path, mode: bool) {
         // Decoding and renaming back
         false => {
             // Remove the prefix from the filename before decoding
-            if filename.starts_with(prefix) && filename.ends_with(']') {
-                let encoded_filename = &filename[prefix.len()..filename.len() - 1]; // Strip prefix and suffix
-                let decoded_filename =
-                    match data_encoding::BASE64URL.decode(encoded_filename.as_bytes()) {
-                        Ok(decoded_bytes) => String::from_utf8_lossy(&decoded_bytes).into_owned(),
-                        Err(e) => {
-                            println!("Error decoding filename: {}", e);
-                            return;
-                        }
-                    };
+            if filename.starts_with(PREFIX) && filename.ends_with(']') {
+                let decoded_filename = match handle_decoding(&PREFIX, filename.to_string()) {
+                    Ok(decoded) => decoded,
+                    Err(e) => {
+                        eprintln!("Error: {:?}", e);
+                        String::from("InvalidBase64")
+                    } // Debug output for custom errors
+                };
 
                 // Create new full path with the decoded filename 
                 let new_path = append_filename_to_path(path, &decoded_filename);
@@ -324,7 +338,7 @@ fn decrypt_message<T: AsRef<str>>(ciphertext: T,key: &[u8],) -> Result<String, B
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 3 {
-        println!("Usage: {} (enc/dec) [path/text]", args[0]);
+        println!("Usage: {} (enc/dec/show) [path/text]", args[0]);
         return;
     }
 
@@ -339,18 +353,35 @@ fn main() {
     let mode = &args[1];
     let candidate = &args[2];
 
-    if !matches!(mode.as_str(), "enc" | "encrypt" | "dec" | "decrypt") {
+    if !matches!(mode.as_str(), "enc" | "encrypt" | "dec" | "decrypt" | "show") {
         eprintln!("Choose between enc or dec for encrypt/decrypt the folder contents\nChoose enc-file or dec-file for encrypt/decrypt a file");
         return;
     }
 
     let mut pwd = String::new();
-    print!("Enter the password: ");
-    stdout().flush().expect("Failed to flush");
-    stdin().read_line(&mut pwd).expect("Failed to read line");
+    if mode.as_str() != "show" {
+        print!("Enter the password: ");
+        stdout().flush().expect("Failed to flush");
+        stdin().read_line(&mut pwd).expect("Failed to read line");
+    }
 
     let path = Path::new(candidate);
     let key = hash_string(&pwd.trim().to_string(), &salt);
+
+    if mode.as_str() == "show" {
+        let filename = path.file_name().unwrap().to_string_lossy().into_owned();
+        if filename.starts_with(PREFIX) && filename.ends_with(']') {
+            let decoded_filename = match handle_decoding(&PREFIX, filename.to_string()) {
+                Ok(decoded) => decoded,
+                Err(e) => {
+                    eprintln!("Error: {:?}", e);
+                    String::from("InvalidBase64")
+                } // Debug output for custom errors
+            };
+            println!("Filename: {}", decoded_filename);
+        }
+        return;
+    }
 
     if !path.exists() {
         if matches!(mode.as_str(), "enc" | "encrypt") {
