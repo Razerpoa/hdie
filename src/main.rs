@@ -6,19 +6,18 @@ use ring::{
     rand::{generate, SystemRandom},
 };
 use sha3::{Digest, Sha3_256};
+use inquire::{Password, PasswordDisplayMode};
 use std::{
     env,
-    fs::{remove_file, rename, File, OpenOptions},
-    io::{self, stdin, stdout, BufReader, BufWriter, ErrorKind, Read, Write},
+    fs::{create_dir_all, remove_file, rename, File, OpenOptions},
+    io::{self, BufReader, BufWriter, ErrorKind, Read, Write},
     path::{Path, PathBuf},
     process::exit,
     vec,
 };
 use walkdir::WalkDir;
-use winreg::enums::*;
-use winreg::RegKey;
 
-const SALT_REGISTRY_KEY: &str = r"SOFTWARE\BigBottle"; // Change this to your desired registry path
+const SALT_FILE_PATH: &str = "~/.config/bigbottle/salt";
 const PREFIX: &str = ".temp-[";
 
 fn encrypt_aes_gcm(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Unspecified> {
@@ -40,24 +39,16 @@ fn encrypt_aes_gcm(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Unspecified>
 }
 
 fn decrypt_aes_gcm(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Unspecified> {
-    // Create an opening key for AES-256-GCM
     let opening_key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, key)?);
 
-    // Extract the nonce
     let (nonce, ciphertext_with_tag) = ciphertext.split_at(12);
-
-    // Calculate the length of the ciphertext without the tag
     let ciphertext_len = ciphertext_with_tag.len() - aead::AES_256_GCM.tag_len();
     let (ciphertext, tag) = ciphertext_with_tag.split_at(ciphertext_len);
 
-    // Create a buffer to hold the plaintext, with the same length as the ciphertext
     let mut plaintext = vec![0; ciphertext.len()];
-
-    // Prepare the full buffer (ciphertext + tag) for decryption
     let mut full_buffer = ciphertext.to_vec();
     full_buffer.extend_from_slice(tag);
 
-    // Decrypt the ciphertext
     let nonce: [u8; 12] = nonce.try_into().map_err(|_| Unspecified)?;
     opening_key.open_in_place(
         aead::Nonce::assume_unique_for_key(nonce),
@@ -65,9 +56,7 @@ fn decrypt_aes_gcm(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Unspecified
         &mut full_buffer,
     )?;
 
-    // Trim the plaintext to the actual decrypted length
     plaintext.copy_from_slice(&full_buffer[..ciphertext.len()]);
-
     Ok(plaintext)
 }
 
@@ -85,6 +74,15 @@ fn list_files_in_dir<P: AsRef<Path>>(dir: P) -> Vec<String> {
 }
 
 fn encrypt_file(path: &String, key: &[u8]) {
+    // Ignore files that already have the PREFIX
+    if let Some(filename) = Path::new(path).file_name() {
+        let filename_str = filename.to_string_lossy();
+        if filename_str.starts_with(PREFIX) && filename_str.ends_with(']') {
+            println!("Skipping file '{}' as it already has the PREFIX.", filename_str);
+            return;
+        }
+    }
+
     let file = match OpenOptions::new().read(true).write(true).open(&path) {
         Ok(file) => file,
         Err(e) => {
@@ -133,7 +131,7 @@ fn encrypt_file(path: &String, key: &[u8]) {
                 return;
             }
             _ => {
-                eprintln!("Other error occured {}", e);
+                eprintln!("Other error occurred {}", e);
                 return;
             }
         },
@@ -182,7 +180,7 @@ fn decrypt_file(path: &String, key: &[u8]) {
                 return;
             }
             _ => {
-                eprintln!("Other error occured {}", e);
+                eprintln!("Other error occurred {}", e);
                 return;
             }
         },
@@ -193,8 +191,7 @@ fn hash_string(plaintext: &String, salt: &[u8]) -> Vec<u8> {
     let mut hasher = Sha3_256::new();
     hasher.update(plaintext.as_bytes());
     hasher.update(salt);
-    let hashed = hasher.finalize().to_vec();
-    hashed
+    hasher.finalize().to_vec()
 }
 
 fn generate_random_salt() -> Vec<u8> {
@@ -205,85 +202,76 @@ fn generate_random_salt() -> Vec<u8> {
     salt
 }
 
-fn handle_registry() -> io::Result<Vec<u8>> {
-    let salt_value_name = "Salto";
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+fn handle_salt_file() -> io::Result<Vec<u8>> {
+    let salt_path = shellexpand::tilde(SALT_FILE_PATH).to_string();
+    let salt_path = Path::new(&salt_path);
+    let salt_dir = salt_path.parent().ok_or_else(|| {
+        io::Error::new(ErrorKind::InvalidData, "Invalid salt file path")
+    })?;
 
-    // Create or open the registry key with better error handling
-    let app_key = match hkcu.open_subkey(SALT_REGISTRY_KEY) {
-        Ok(key) => key,
-        Err(_) => {
-            let (key, _) = hkcu.create_subkey(SALT_REGISTRY_KEY)?;
-            key
+    // Create the directory if it doesn't exist
+    create_dir_all(salt_dir)?;
+
+    // Try to read existing salt or create a new one
+    match File::open(salt_path) {
+        Ok(file) => {
+            let mut reader = BufReader::new(file);
+            let mut salt = String::new();
+            reader.read_to_string(&mut salt)?;
+            data_encoding::BASE64URL
+                .decode(salt.as_bytes())
+                .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))
         }
-    };
-
-    // Try to get existing salt or create new one
-    let salt: String = match app_key.get_value(salt_value_name) {
-        Ok(existing_salt) => existing_salt,
-        Err(_) => {
+        Err(e) if e.kind() == ErrorKind::NotFound => {
             let new_salt = generate_random_salt();
-            app_key.set_value(salt_value_name, &data_encoding::BASE64URL.encode(&new_salt))?;
-            data_encoding::BASE64URL.encode(&new_salt)
+            let mut file = File::create(salt_path)?;
+            file.write_all(&data_encoding::BASE64URL.encode(&new_salt).as_bytes())?;
+            Ok(new_salt)
         }
-    };
-    let decoded = data_encoding::BASE64URL
-        .decode(salt.as_bytes())
-        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
-    Ok(decoded)
-}
-
-fn handle_encoding(prefix: &str, filename: String) -> String {
-    // Encode the filename and prepend the prefix
-    let encoded_filename = data_encoding::BASE64URL.encode(filename.as_bytes());
-    let new_name = format!("{}{}]", prefix, encoded_filename);
-    new_name
-}
-
-fn handle_decoding(prefix: &str, filename: String) -> Result<String, String> {
-    // Strip prefix and suffix
-    let encoded_filename = &filename[prefix.len()..filename.len() - 1];
-
-    // Attempt to decode
-    match data_encoding::BASE64URL.decode(encoded_filename.as_bytes()) {
-        Ok(decoded_bytes) => Ok(String::from_utf8_lossy(&decoded_bytes).into_owned()),
-        Err(e) => Err(format!("Decoding error: {}", e)), // Return the error
+        Err(e) => Err(e),
     }
 }
 
+fn handle_encoding(prefix: &str, filename: String) -> String {
+    let encoded_filename = data_encoding::BASE64URL.encode(filename.as_bytes());
+    format!("{}{}]", prefix, encoded_filename)
+}
+
+fn handle_decoding(prefix: &str, filename: String) -> Result<String, String> {
+    let encoded_filename = &filename[prefix.len()..filename.len() - 1];
+    match data_encoding::BASE64URL.decode(encoded_filename.as_bytes()) {
+        Ok(decoded_bytes) => Ok(String::from_utf8_lossy(&decoded_bytes).into_owned()),
+        Err(e) => Err(format!("Decoding error: {}", e)),
+    }
+}
 
 fn handle_renaming(path: &Path, mode: bool) {
     let filename = path.file_name().unwrap().to_string_lossy().into_owned();
 
     match mode {
-        // Encoding and renaming
         true => {
+            // Skip renaming if file already has the PREFIX
+            if filename.starts_with(PREFIX) && filename.ends_with(']') {
+                println!("Skipping renaming '{}' as it already has the PREFIX.", filename);
+                return;
+            }
             let new_name = handle_encoding(PREFIX, filename);
-            // Create a new full path with the encoded filename
             let new_path = append_filename_to_path(path, &new_name);
-
-            // Rename the file
             match rename(path, &new_path) {
                 Ok(()) => (),
                 Err(e) => println!("Error renaming file: {}", e),
             };
         }
-        // Decoding and renaming back
         false => {
-            // Remove the prefix from the filename before decoding
             if filename.starts_with(PREFIX) && filename.ends_with(']') {
                 let decoded_filename = match handle_decoding(&PREFIX, filename.to_string()) {
                     Ok(decoded) => decoded,
                     Err(e) => {
                         eprintln!("Error: {:?}", e);
                         String::from("InvalidBase64")
-                    } // Debug output for custom errors
+                    }
                 };
-
-                // Create new full path with the decoded filename 
                 let new_path = append_filename_to_path(path, &decoded_filename);
-
-                // Rename the file back to the original name
                 match rename(path, &new_path) {
                     Ok(()) => (),
                     Err(e) => {
@@ -301,11 +289,10 @@ fn handle_renaming(path: &Path, mode: bool) {
     }
 }
 
-// Helper function to append a filename to an existing path
 fn append_filename_to_path(original_path: &Path, new_filename: &str) -> PathBuf {
     let mut new_path = original_path.to_path_buf();
     new_path.pop();
-    new_path.push(new_filename); 
+    new_path.push(new_filename);
     new_path
 }
 
@@ -318,11 +305,10 @@ fn encrypt_message<T: AsRef<str>>(msg: T, key: &[u8]) -> String {
             exit(1)
         }
     };
-    let cipher = data_encoding::BASE64URL.encode(&ciphertext);
-    cipher
+    data_encoding::BASE64URL.encode(&ciphertext)
 }
 
-fn decrypt_message<T: AsRef<str>>(ciphertext: T,key: &[u8],) -> Result<String, Box<dyn std::error::Error>> {
+fn decrypt_message<T: AsRef<str>>(ciphertext: T, key: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
     let ciphertext = data_encoding::BASE64URL.decode(ciphertext.as_ref().as_bytes())?;
     let plaintext = match decrypt_aes_gcm(key, &ciphertext) {
         Ok(plaintext) => plaintext,
@@ -331,18 +317,17 @@ fn decrypt_message<T: AsRef<str>>(ciphertext: T,key: &[u8],) -> Result<String, B
             exit(1);
         }
     };
-    let msg = String::from_utf8_lossy(&plaintext).into_owned();
-    Ok(msg)
+    Ok(String::from_utf8_lossy(&plaintext).into_owned())
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 3 {
-        println!("Usage: {} (enc/dec/show) [path/text]", args[0]);
+        println!("Usage: {} (enc/dec) [path/text]", args[0]);
         return;
     }
 
-    let salt = match handle_registry() {
+    let salt = match handle_salt_file() {
         Ok(salt) => salt,
         Err(e) => {
             println!("{}", e);
@@ -353,39 +338,23 @@ fn main() {
     let mode = &args[1];
     let candidate = &args[2];
 
-    if !matches!(mode.as_str(), "enc" | "encrypt" | "dec" | "decrypt" | "show") {
-        eprintln!("Choose between enc or dec for encrypt/decrypt the folder contents\nChoose enc-file or dec-file for encrypt/decrypt a file");
+    if !matches!(mode.as_str(), "enc" | "encrypt" | "dec" | "decrypt") {
+        eprint!("Error in your arguments");
         return;
     }
 
-    let mut pwd = String::new();
-    if mode.as_str() != "show" {
-        print!("Enter the password: ");
-        stdout().flush().expect("Failed to flush");
-        stdin().read_line(&mut pwd).expect("Failed to read line");
-    }
+    let pwd = Password::new("Enter the password:")
+        .with_display_mode(PasswordDisplayMode::Masked)
+        .prompt()
+        .unwrap();
 
     let path = Path::new(candidate);
     let key = hash_string(&pwd.trim().to_string(), &salt);
 
-    if mode.as_str() == "show" {
-        let filename = path.file_name().unwrap().to_string_lossy().into_owned();
-        if filename.starts_with(PREFIX) && filename.ends_with(']') {
-            let decoded_filename = match handle_decoding(&PREFIX, filename.to_string()) {
-                Ok(decoded) => decoded,
-                Err(e) => {
-                    eprintln!("Error: {:?}", e);
-                    String::from("InvalidBase64")
-                } // Debug output for custom errors
-            };
-            println!("Filename: {}", decoded_filename);
-        }
-        return;
-    }
-
     if !path.exists() {
         if matches!(mode.as_str(), "enc" | "encrypt") {
             let ciphertext = encrypt_message(candidate, &key);
+            println!("Encrypting as a Text");
             println!("Encrypted: {}", ciphertext);
         } else {
             let msg = match decrypt_message(candidate, &key) {
@@ -395,6 +364,7 @@ fn main() {
                     return;
                 }
             };
+            println!("Decrypting as a Text");
             println!("Decrypted: {}", msg);
         }
         return;
