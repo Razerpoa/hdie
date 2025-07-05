@@ -141,7 +141,7 @@ fn handle_encoding(prefix: &str, filename: String) -> String {
     format!("{}{}]", prefix, encoded_filename)
 }
 
-fn handle_decoding(prefix: &str, filename: String) -> Result<String, String> {
+pub fn handle_decoding(prefix: &str, filename: String) -> Result<String, String> {
     let encoded_filename = &filename[prefix.len()..filename.len() - 1];
     match data_encoding::BASE64URL.decode(encoded_filename.as_bytes()) {
         Ok(decoded_bytes) => Ok(String::from_utf8_lossy(&decoded_bytes).into_owned()),
